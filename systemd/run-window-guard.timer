@@ -1,0 +1,12 @@
+[Unit]
+Description=instabox run-window guard: preemptive suspend before the 480-min forced cap
+Documentation=file:%h/.local/bin/run-window-guard.sh
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=10min
+AccuracySec=1min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

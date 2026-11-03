@@ -1,0 +1,13 @@
+[Unit]
+Description=instabox run-window guard (self-suspend only when an external resumer is alive)
+Documentation=file:%h/.local/bin/run-window-guard.sh
+
+[Service]
+Type=oneshot
+# 机器 ID 与 key 路径按实际改；或改用 EnvironmentFile=%h/.config/instabox-watchdog.env
+Environment=INSTABOX_MACHINE_ID=CHANGE_ME
+Environment=INSTABOX_KEY_ENV=%h/.config/instabox-api.env
+# 可选：keeper 存活检查（形如 owner/repo），留空则跳过该检查
+Environment=INSTABOX_KEEPER_REPO=
+ExecStart=/bin/bash %h/.local/bin/run-window-guard.sh
+TimeoutStartSec=120

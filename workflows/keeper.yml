@@ -1,0 +1,77 @@
+name: instabox-keeper
+
+# 每 15 分钟（UTC）由 GitHub Actions 定时触发；也可在 Actions 页面手动 Run workflow。
+#
+# 外部恢复器（Mac 看门狗不在线时的兜底）：instabox 免费计划 maxRunMinutes=480
+# （8小时）官方锁死，机器被挂起后机器内部没有任何东西能自救（停机即冻结），
+# 只能由外部调用 API 恢复。本 workflow 每 15 分钟检查一次：
+#   running → 什么都不做
+#   非 running → wake（仅对 idle 挂起有效，手动 suspend 拉不回）→ resume（暂停续跑）
+#                → start（停止后启动）
+#
+# no_capacity 教训（2026-11-02 16:08 实测）：resume 可能因宿主无容量失败
+# （错误码 no_capacity，retryAfter 60s，实测持续 13 分钟）。单次 run 内循环重试
+# 4 轮（约 7 分钟），仍失败则告警但下一 tick 继续试——容量恢复前失败是常态，
+# 不构成人工介入信号；持续 1 小时以上才需看控制台。
+#
+# 密钥用 scoped key（machines:read + machines:write，仅本机生命周期权限），
+# 存放在本私有 repo 的 Secrets，不进任何文件与命令行。
+on:
+  schedule:
+    - cron: '2,17,32,47 * * * *'
+  workflow_dispatch:
+
+jobs:
+  keep-awake:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      MACHINE_ID: ${{ vars.INSTABOX_MACHINE_ID }}
+    steps:
+      - name: 检查机器状态，挂了就恢复（含 no_capacity 重试）
+        env:
+          INSTABOX_API_KEY: ${{ secrets.INSTABOX_KEEPER_KEY }}
+        run: |
+          set -uo pipefail
+          if [ -z "${MACHINE_ID:-}" ]; then
+            echo "::error::请在 repo Settings → Secrets and variables → Actions → Variables 添加 INSTABOX_MACHINE_ID（形如 m_xxxxxxxx）"; exit 1
+          fi
+          if [ -z "${INSTABOX_API_KEY:-}" ]; then
+            echo "secret 未配置，跳过"; exit 0
+          fi
+          BASE="https://api.instabox.sh/v1/machines/$MACHINE_ID"
+          AUTH=(-H "X-API-Key: $INSTABOX_API_KEY")
+          state() { curl -s --max-time 20 "$BASE" "${AUTH[@]}" | jq -r '.state // "unknown"'; }
+          wait_running() {
+            for _ in $(seq 1 12); do
+              [ "$(state)" = "running" ] && return 0
+              sleep 5
+            done
+            return 1
+          }
+          act() {
+            echo "→ $1"
+            op=$(curl -s --max-time 30 -X POST "$BASE/$1" "${AUTH[@]}" \
+                 -H "Idempotency-Key: $(uuidgen)" | jq -r '.id // empty')
+            echo "  operation=${op:-none}"
+            [ -n "$op" ]
+          }
+          # 单 tick 内 4 轮递降恢复（wake→resume→start），对抗 no_capacity；
+          # 跨 tick 也会继续，容量恢复最长实测约 13 分钟
+          for round in 1 2 3 4; do
+            S=$(state); echo "round $round: state=$S"
+            [ "$S" = "running" ] && { echo "运行中，无需动作"; exit 0; }
+            act wake   || true; wait_running || true
+            [ "$(state)" = "running" ] && continue
+            act resume || true; wait_running || true
+            [ "$(state)" = "running" ] && continue
+            act start  || true; wait_running || true
+            [ "$(state)" = "running" ] && continue
+            sleep 30
+          done
+          if [ "$(state)" = "running" ]; then
+            echo "✓ 机器已恢复运行"
+          else
+            echo "::warning::机器仍未运行（多为宿主无容量 no_capacity，重试中）。下一 tick 继续；持续 1 小时以上请人工检查控制台"
+            exit 1
+          fi

@@ -1,0 +1,22 @@
+[Unit]
+Description=Keep-awake daemon - burns one core so instabox does not idle-suspend the box
+Documentation=file:%h/.local/bin/keep-awake.sh
+After=network-online.target
+
+[Service]
+Type=simple
+# 常驻守护：真死了 10 秒后拉起来。挂起不会弄死它（只是冻住），恢复后继续烧。
+Restart=always
+RestartSec=10s
+Environment=INSTABOX_KEEP_AWAKE_DIR=%h/.cache/instabox-watchdog
+ExecStart=/bin/bash %h/.local/bin/keep-awake.sh
+WorkingDirectory=%h
+StandardOutput=journal
+StandardError=journal
+# 脚本自己捕获 SIGTERM 并留日志，给够时间
+KillSignal=SIGTERM
+TimeoutStopSec=20s
+
+[Install]
+# 常驻服务挂 default.target，配合 loginctl enable-linger 实现开机无登录自启
+WantedBy=default.target
